@@ -1,0 +1,210 @@
+---
+title: "cloud-services"
+author: "Dev"
+date: '2022-10-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+# loading the required packages
+library(tidyverse) # for data wrangling and visualization
+library(ggpubr) # theme_pubr()
+library(broom) # for tidy model output
+library(dfidx) # for indexed data frames
+library(mlogit) # for multinomial logit
+```
+
+## Data
+
+```{r}
+# reading the data
+cloud <- read.csv("cloud.csv" , stringsAsFactors = T)
+
+```
+
+## Data inspection and wrangling
+
+```{r}
+glimpse (cloud)
+summary (cloud)
+
+# Converting the attributes and setting the reference levels
+cloud$cloud_storage <- relevel(cloud$cloud_storage , ref = '30gb')
+cloud$price <- relevel(cloud$price , ref = 'p6')
+
+# removing p from price and setting it as a numeric
+cloud$price_n <- cloud %>% 
+  mutate (price = gsub ("p" , "" , price) ,
+          price = as.numeric(price))
+
+as.data.frame(cloud$price_n)
+
+View (cloud$price_n)
+
+price_n <- cloud$price_n$price
+
+cloud <- cloud [ , 1:9]
+cloud$price_n <- price_n
+cloud$price_n <- as.numeric (cloud$price_n)
+glimpse(cloud)
+price_n
+mean (price_n)
+mean (cloud$price_n)
+
+head (cloud)
+
+table (cloud$cloud_storage)
+
+table (cloud$cloud_services)
+```
+
+## Logistic regression
+
+```{r}
+# shape data for mlogit
+m_data <- dfidx(cloud ,
+                choice = "choice" , 
+                idx = list (c("choice_id" , "respondent_id") ,
+                            "alternative_id"))
+m_data
+
+# Estimate the model
+set.seed (123)
+
+# Build the model using m_data
+model1 <- mlogit(choice ~ 0 + cloud_storage + customer_support + cloud_services + price , 
+                 data = m_data)
+
+corr1 <- summary (model1)$CoefTable
+write.csv (corr1 , "corr1.csv")
+
+```
+
+## New model
+```{r}
+set.seed (123)
+model2 <- mlogit(choice ~ 0 + cloud_storage + customer_support + cloud_services + price_n , 
+                 data = m_data)
+corr2 <- summary (model2)$CoefTable
+write.csv (corr2 , "corr2.csv")
+hist (cloud$price_n)
+```
+
+## Likelihood ratio test
+```{r}
+# likelihood ratio test
+lrtest (model1 , model2)
+```
+
+
+## Prediction and probabilities
+```{r}
+# print the prediction for the first five choice sets in the data.
+head (predict (model2 , m_data , 1))
+
+
+# predict the choice probabilities for all different alternatives in the data
+predicted_prob <- predict(model2 , m_data) %>% 
+  as_tibble()
+
+predicted_prob
+
+# compute the predicted alternatives using the maximum choice probabilities.
+predicted_alternatives <- 
+  predicted_prob %>% 
+  rowid_to_column("choiseset_id") %>% 
+  pivot_longer(!choiseset_id , names_to = "choice" , values_to = "prob") %>% 
+  group_by(choiseset_id) %>% 
+  slice(which.max(prob)) %>% 
+  ungroup() %>% 
+  select(choice) %>% 
+  as_vector()
+```
+
+## Confusion matrix
+```{r}
+# extract the selected alternatives from the data
+selected_alternatives <- cloud %>% 
+  filter (choice > 0) %>% 
+  select (alternative_id) %>% 
+  as_vector()
+
+# confusion matrix
+table (selected_alternatives , predicted_alternatives)
+
+# Accuracy or hit rate
+(579+624+614)/3000
+```
+
+
+## Conjoint simulator
+
+```{r}
+#build a custom function to predict market share for an arbitrary set of alternatives available in a data set “d”.
+
+
+predict.share <- function(model2, d) {
+  temp <- model.matrix(update(model2$formula, 0 ~ .), data = d)[, -1] # generate dummy matrix
+  u <- temp %*% model2$coef[colnames(temp)] # calculate utilities
+  probs <- t(exp(u) / sum(exp(u))) # calculate probabilities
+  colnames(probs) <- paste("alternative", colnames(probs))
+  return(probs)
+}
+
+```
+
+## A hypothetical base market structure
+```{r}
+# consider a hypothetical base market structure with 4 alternatives in the market.
+
+
+cloud_storage <- c ("30gb" , "30gb" , "30gb" , "5000gb" , "5000gb")
+customer_support <- c ("no" , "no" , "yes" , "yes" , "no")
+cloud_services <- c ("email" , "email, video" , "email" , "email" , "email, video, productivity")
+price_n <- c (6,12,12,18,18) 
+d_base <- cbind (cloud_storage , customer_support , cloud_services , price_n)
+d_base <- d_base %>% as_tibble()
+d_base$cloud_storage <- as.factor(d_base$cloud_storage)
+d_base$customer_support <- as.factor(d_base$customer_support)
+d_base$cloud_services <- as.factor(d_base$cloud_services)
+d_base$price_n <- as.numeric(d_base$price_n)
+
+# run the custom function and attach it's output
+d_base <- cbind(d_base , as.vector(predict.share(model2 , d_base)))
+
+d_base
+cloud
+
+# change the column name
+colnames(d_base) [5] <- "predicted_share"
+d_base
+
+# make a copy of the d_base
+d_new <- d_base
+d_new [5 , 3] <- "email, video"
+d_new
+str(d_new)
+d_new$predicted_share <- as.vector(predict.share(model2 , d_new))
+d_new
+
+```
+
+# Calculating willingness to pay towards customer support
+```{r}
+- coef(model2) ['customer_supportyes']
+# brand equity - dollar value of an upgrade from 30Gb to 2000 GB
+- coef (model2) ['cloud_storage2000gb'] / coef (model2) ['price_n']
+
+# brand equity - dollar value of an upgrade from 2000GB to 5000GB
+- (coef (model2) ['cloud_storage5000gb'] - coef (model2) ['cloud_storage2000gb']) / coef (model2) ['price_n']
+
+coef(model2)
+```
+
+----
